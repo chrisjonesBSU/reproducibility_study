@@ -1,12 +1,16 @@
 """Setup for signac, signac-flow, signac-dashboard for this study."""
 import os
 import pathlib
+import sys
 
 import flow
-from flow import environments
+import panedr
+import unyt as u
+from flow.environment import DefaultPBSEnvironment
 
-import reproducibility_project
+from reproducibility_project.src.analysis.equilibration import is_equilibrated
 from reproducibility_project.src.engine_input.gromacs import mdp
+from reproducibility_project.src.utils.forcefields import load_ff
 
 
 class Project(flow.FlowProject):
@@ -19,171 +23,154 @@ class Project(flow.FlowProject):
         self.ff_fn = self.data_dir / "forcefield.xml"
 
 
-"""Setting progress label"""
+class Rahman(DefaultPBSEnvironment):
+    """Subclass of DefaultPBSEnvironment for VU's Rahman cluster."""
 
+    template = "rahman_gmx.sh"
 
-@Project.label
-def job_init(job):
-    """Label for the initialization step."""
-    return job.isfile("init.gro", "init.top", "nvt.mdp", "npt.mdp")
-
-
-@Project.label
-def em_grompp(job):
-    """Label for the grompp_em step."""
-    return job.isfile("em.tpr")
-
-
-@Project.label
-def em_completed(job):
-    """Label for the gmx_em step."""
-    return job.isfile("em.gro")
-
-
-@Project.label
-def nvt_grompp(job):
-    """Label for the grompp_nvt step."""
-    return job.isfile("nvt.tpr")
-
-
-@Project.label
-def nvt_completed(job):
-    """Label for the gmx_nvt step."""
-    return job.isfile("nvt.gro")
-
-
-@Project.label
-def npt_grompp(job):
-    """Label for the grompp_npt step."""
-    return job.isfile("npt.tpr")
-
-
-@Project.label
-def npt_completed(job):
-    """Label for the gmx_npt step."""
-    return job.isfile("npt.gro")
-
-
-"""Setting up workflow operation"""
+    @classmethod
+    def add_args(cls, parser):
+        """Add command line arguments to the submit call."""
+        parser.add_argument(
+            "--walltime",
+            type=float,
+            default=96,
+            help="Walltime for this submission",
+        )
 
 
 @Project.operation
-@Project.pre(lambda j: j.sp.simulation_engine == "gromacs")
+@Project.pre(lambda j: j.sp.engine == "gromacs")
+@Project.post(lambda j: j.isfile("init.gro"))
+@Project.post(lambda j: j.isfile("init.top"))
+@Project.post(lambda j: j.isfile("em.mdp"))
+@Project.post(lambda j: j.isfile("nvt.mdp"))
+@Project.post(lambda j: j.isfile("npt.mdp"))
+@flow.with_job
 def init_job(job):
     """Initialize individual job workspace, including mdp and molecular init files."""
-    from project.src.molecules.system_builder import construct_system
+    sys.path.append(Project().root_directory() + "/..")
+    from reproducibility_project.src.engine_input.gromacs import mdp
+    from reproducibility_project.src.molecules.system_builder import (
+        construct_system,
+    )
 
-    with job:
-        # Create a Compound and save to gro and top files
-        system = construct_system(job.sp)
-        system.save(filename="init.gro")
-        system.save(filename="init.top", forcefield_name=job.sp.forcefield_name)
+    # Create a Compound and save to gro and top files
+    system = construct_system(job.sp)
+    system[0].save(filename="init.gro", overwrite=True)
+    ff = load_ff(job.sp.forcefield_name)
+    param_system = ff.apply(system[0])
+    param_system.save(
+        "init.top",
+        overwrite=True,
+    )
 
-        # Modify mdp files according to job statepoint parameters
-        mdp_abs_path = os.path.dirname(os.path.abspath(mdp.__file__))
-        mdps = {
-            "em": {
-                "fname": "em.mdp",
-                "template": f"{mdp_abs_path}/em_template.mdp.jinja",
-                "data": dict(),
+    # Modify mdp files according to job statepoint parameters
+    cutoff_styles = {"hard": "Cut-off"}
+    pressure = job.sp.pressure * u.kPa
+    mdp_abs_path = os.path.dirname(os.path.abspath(mdp.__file__))
+    mdps = {
+        "em": {
+            "fname": "em.mdp",
+            "template": f"{mdp_abs_path}/em_template.mdp.jinja",
+            "data": {
+                "r_cut": job.sp.r_cut,
+                "cutoff_style": cutoff_styles[job.sp.cutoff_style],
+                "temp": job.sp.temperature,
+                "replica": job.sp.replica,
             },
-            "nvt": {
-                "fname": "nvt.mdp",
-                "template": f"{mdp_abs_path}/nvt_template.mdp.jinja",
-                "data": {"temp": job.sp.temperature},
+        },
+        "nvt": {
+            "fname": "nvt.mdp",
+            "template": f"{mdp_abs_path}/nvt_template.mdp.jinja",
+            "data": {
+                "temp": job.sp.temperature,
+                "r_cut": job.sp.r_cut,
+                "cutoff_style": cutoff_styles[job.sp.cutoff_style],
             },
-            "npt": {
-                "fname": "npt.mdp",
-                "template": f"{mdp_abs_path}/npt_template.mdp.jinja",
-                "data": {
-                    "temp": job.sp.temperature,
-                    "refp": job.sp.pressure,
-                },
+        },
+        "npt": {
+            "fname": "npt.mdp",
+            "template": f"{mdp_abs_path}/npt_template.mdp.jinja",
+            "data": {
+                "temp": job.sp.temperature,
+                "refp": pressure.to_value("bar"),
+                "r_cut": job.sp.r_cut,
+                "cutoff_style": cutoff_styles[job.sp.cutoff_style],
             },
-        }
+        },
+    }
 
-        for op, mdp in mdps.items():
-            _setup_mdp(
-                fname=mdp["fname"],
-                template=mdp["template"],
-                data=mdp["data"],
-                overwrite=True,
-            )
-        return None
+    for op, mdp in mdps.items():
+        _setup_mdp(
+            fname=mdp["fname"],
+            template=mdp["template"],
+            data=mdp["data"],
+            overwrite=True,
+        )
 
 
 @Project.operation
-@Project.pre(lambda j: j.sp.simulation_engine == "gromacs")
+@Project.pre(lambda j: j.sp.engine == "gromacs")
 @Project.pre(lambda j: j.isfile("init.gro"))
 @Project.pre(lambda j: j.isfile("init.top"))
-@flow.cmd
-def grompp_em(job):
-    """Run GROMACS grompp for the energy minimization step."""
-    with job:
-        em_mdp_path = "em.mdp"
-        msg = f"gmx grompp -f {em_mdp_path} -o em.tpr -c init.gro -p init.top --maxwarn 1"
-        return msg
-
-
-@Project.operation
-@Project.pre(lambda j: j.sp.simulation_engine == "gromacs")
-@Project.pre(lambda j: j.isfile("em.tpr"))
+@Project.post(lambda j: j.isfile("em.gro"))
+@flow.with_job
 @flow.cmd
 def gmx_em(job):
-    """Run GROMACS mdrun for the energy minimization step."""
-    with job:
-        return _mdrun_str("em")
+    """Run GROMACS grompp for the energy minimization step."""
+    em_mdp_path = "em.mdp"
+    grompp = f"gmx grompp -f {em_mdp_path} -o em.tpr -c init.gro -p init.top --maxwarn 1"
+    mdrun = _mdrun_str("em")
+    return f"{grompp} && {mdrun}"
 
 
 @Project.operation
-@Project.pre(lambda j: j.sp.simulation_engine == "gromacs")
+@Project.pre(lambda j: j.sp.engine == "gromacs")
 @Project.pre(lambda j: j.isfile("em.gro"))
-@flow.cmd
-def grompp_nvt(job):
-    """Run GROMACS grompp for the nvt step."""
-    with job:
-        # nvt_mdp_path = "../../engine_input/gromacs/mdp/nvt.mdp"
-        nvt_mdp_path = "nvt.mdp"
-        msg = f"gmx grompp -f {nvt_mdp_path} -o nvt.tpr -c em.gro -p init.top --maxwarn 1"
-        return msg
-
-
-@Project.operation
-@Project.pre(lambda j: j.sp.simulation_engine == "gromacs")
-@Project.pre(lambda j: j.isfile("nvt.tpr"))
+@Project.post(lambda j: j.isfile("nvt.gro"))
+@flow.with_job
 @flow.cmd
 def gmx_nvt(job):
-    """Run GROMACS mdrun for the nvt step."""
-    with job:
-        return _mdrun_str("nvt")
+    """Run GROMACS grompp for the nvt step."""
+    nvt_mdp_path = "nvt.mdp"
+    grompp = f"gmx grompp -f {nvt_mdp_path} -o nvt.tpr -c em.gro -p init.top --maxwarn 1"
+    mdrun = _mdrun_str("nvt")
+    return f"{grompp} && {mdrun}"
 
 
 @Project.operation
-@Project.pre(lambda j: j.sp.simulation_engine == "gromacs")
+@Project.pre(lambda j: j.sp.engine == "gromacs")
 @Project.pre(lambda j: j.isfile("nvt.gro"))
-@flow.cmd
-def grompp_npt(job):
-    """Run GROMACS grompp for the npt step."""
-    with job:
-        # npt_mdp_path = "../../engine_input/gromacs/mdp/npt.mdp"
-        npt_mdp_path = "npt.mdp"
-        msg = f"gmx grompp -f {npt_mdp_path} -o npt.tpr -c em.gro -p init.top --maxwarn 1"
-        return msg
-
-
-@Project.operation
-@Project.pre(lambda j: j.sp.simulation_engine == "gromacs")
-@Project.pre(lambda j: j.isfile("npt.tpr"))
+@Project.post(lambda j: j.isfile("npt.gro"))
+@flow.with_job
 @flow.cmd
 def gmx_npt(job):
-    """Run GROMACS mdrun for the npt step."""
-    with job:
-        return _mdrun_str("npt")
+    """Run GROMACS grompp for the npt step."""
+    npt_mdp_path = "npt.mdp"
+    grompp = f"gmx grompp -f {npt_mdp_path} -o npt.tpr -c em.gro -p init.top --maxwarn 1"
+    mdrun = _mdrun_str("npt")
+    return f"{grompp} && {mdrun}"
+
+
+@Project.operation
+@Project.pre(lambda j: j.sp.engine == "gromacs")
+@Project.pre(lambda j: j.isfile("npt.gro"))
+@Project.pre(lambda j: not equil_status(j, "npt", "Potential"))
+@Project.post(lambda j: equil_status(j, "npt", "Potential"))
+@flow.with_job
+@flow.cmd
+def extend_gmx_npt(job):
+    """Run GROMACS grompp for the npt step."""
+    # Extend the npt run by 1000 ps (1 ns)
+    extend = "gmx convert-tpr -s npt.tpr -extend 1000 -o npt.tpr"
+    mdrun = _mdrun_str("npt")
+    return f"{extend} && {mdrun}"
 
 
 def _mdrun_str(op):
     """Output an mdrun string for arbitrary operation."""
-    msg = f"gmx mdrun -v deffnm {op} -s {op}.tpr -cpi {op}.cpt "
+    msg = f"gmx mdrun -v -deffnm {op} -s {op}.tpr -cpi {op}.cpt -nt 16"
     return msg
 
 
@@ -205,7 +192,6 @@ def _setup_mdp(fname, template, data, overwrite=False):
     -------
     File saved with names defined by fname
     """
-    import jinja2
     from jinja2 import Template
 
     if isinstance(template, str):
@@ -225,7 +211,16 @@ def _setup_mdp(fname, template, data, overwrite=False):
     return None
 
 
+def equil_status(job, op, att):
+    """Check equilibration status of specific attributes of specific operation."""
+    p = pathlib.Path(job.workspace())
+    if not job.isfile(f"{str(p.absolute)}/{op}.edr"):
+        return False
+    else:
+        data = panedr.edr_to_df(f"{str(p.absolute)}/{op}.edr")
+        return is_equilibrated(data[att])[0]
+
+
 if __name__ == "__main__":
     pr = Project()
     pr.main()
-    breakpoint()
