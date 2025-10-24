@@ -1,4 +1,5 @@
 """Takes an mbuild filled_box and creates a restart file for mcccs simulations."""
+
 import errno
 import os
 import sys
@@ -91,7 +92,6 @@ def fort77writer(
     nbeads_list = []
     charge_list = []
     for i in range(len(molecules)):
-
         current_molecule = mb.clone(molecules[i])
         molecule_names.append(current_molecule.name)
         nbeads_list.append(0)
@@ -109,9 +109,9 @@ def fort77writer(
     MoleculesBox[1] = molecule_names
     MoleculesBox[2] = molecule_names
     NBeadsBox = {}
-    NBeadsBox[
-        1
-    ] = nbeads_list  # list that contains number of beads for each molecule type
+    NBeadsBox[1] = (
+        nbeads_list  # list that contains number of beads for each molecule type
+    )
     NBeadsBox[2] = nbeads_list
 
     NMoleculesBox = {}
@@ -130,7 +130,6 @@ def fort77writer(
     config_file = {}
 
     for j in range(NBox):
-
         if lconfig_file[j]:
             number_of_beads_in_config = sum(
                 [a * b for a, b in zip(NBeadsBox[j + 1], NMoleculesBox[j + 1])]
@@ -151,7 +150,6 @@ def fort77writer(
 
             a = "\n\n"
             while i < number_of_beads_in_config:
-
                 b = file_object2.readline().split()[0]
 
                 c = file_object1.readline()
@@ -172,7 +170,6 @@ def fort77writer(
 
     for i in range(NBox):
         for j in range(len(MoleculesBox[i + 1])):
-
             nbeads_diction[MoleculesBox[i + 1][j]] = NBeadsBox[i + 1][j]
 
     nchain = 0
@@ -189,7 +186,6 @@ def fort77writer(
 
     liq = {}
     for box in range(1, NBox + 1):
-
         i = 0  # counter for total atoms
         ni = 0  # counter for atoms in each molecule
         totalbeads = sum(
@@ -203,7 +199,6 @@ def fort77writer(
         number_beads_each_type = NBeadsBox[box]
 
         with open(fileBox[box], "r") as f:
-
             next(f)
             next(f)
             for line in f:
@@ -265,7 +260,6 @@ def fort77writer(
                 k += 1
             incremental_list = [x - 1 for x in incremental_list]
             for i in incremental_list:
-
                 identity_molecule.append(
                     molecule_identifier_diction[liq[j + 1][i][1]]
                 )
@@ -300,7 +294,6 @@ def fort77writer(
 
     volume_disp = [1] * NBox
     for element in volume_disp:
-
         f.write(
             "{0:24.12f}".format(element)
         )  # max volume displacements for boxes 1 - 3
@@ -335,7 +328,6 @@ def fort77writer(
 
     element_index = 0
     for element in identity_molecule:
-
         f.write("{0:12.0f} ".format(element))
         element_index += 1
         if element_index % 6 == 0 and not (
@@ -346,7 +338,6 @@ def fort77writer(
 
     element_index = 0
     for element in identity_molecule_box:
-
         f.write("{0:12.0f} ".format(element))
 
         element_index += 1
@@ -368,7 +359,6 @@ def fort77writer(
                 )
             ),
         ):
-
             f.write(
                 "{0:24.16f}{1:24.16f}{2:24.16f}\n{3:24.16f}\n".format(
                     liq[j + 1][i][2],

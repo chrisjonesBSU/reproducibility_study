@@ -1,4 +1,5 @@
 """Setup for signac, signac-flow, signac-dashboard for this study."""
+
 import os
 import pathlib
 import sys
@@ -131,7 +132,7 @@ def CalculateEnergy(job):
 @Project.pre(lambda j: j.sp.engine == "gromacs")
 @Project.pre(lambda j: j.isfile("nvt_ewald.edr"))
 @Project.pre(lambda j: j.isfile("nvt_p3m.edr"))
-@Project.post(lambda j: j.isfile("log-spe1.txt"))
+@Project.post(lambda j: j.isfile("log-spe.txt"))
 @Project.post(lambda j: j.isfile("log-spe-ewald.txt"))
 @Project.post(lambda j: j.isfile("log-spe-p3m.txt"))
 @flow.with_job

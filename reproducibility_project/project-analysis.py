@@ -1,10 +1,14 @@
 """Setup for signac, signac-flow, signac-dashboard for this study."""
+
+import pathlib
+from copy import copy
 from typing import List
 
 import flow
 import numpy as np
 import signac
 from flow import aggregator
+from flow.environment import DefaultPBSEnvironment
 
 
 class Project(flow.FlowProject):
@@ -14,10 +18,56 @@ class Project(flow.FlowProject):
         super().__init__()
 
 
+class RahmanAnalysis(DefaultPBSEnvironment):
+    """Subclass of DefaultPBSEnvironment for VU's Rahman cluster."""
+
+    hostname_pattern = "master.cl.vanderbilt.edu"
+    template = "rahman_analysis.sh"
+
+    @classmethod
+    def add_args(cls, parser):
+        """Add command line arguments to the submit call."""
+        parser.add_argument(
+            "--walltime",
+            type=float,
+            default=96,
+            help="Walltime for this submission",
+        )
+
+
+mc_engines = ("gomc", "mcccs", "cassandra")
+md_engines = ("gromacs", "hoomd", "lammps-VU")
+md_npt_props = [
+    "potential_energy",
+    "kinetic_energy",
+    "temperature",
+    "pressure",
+    "density",
+]
+mc_npt_props = [
+    "potential_energy",
+    "temperature",
+    "pressure",
+    "density",
+]
+
+
+# make a FlowGroup for all analysis operations, usually faster than the plotting methods
+analysis = Project.make_group(name="analysis")
+
+
+def _aggregate_statistics(val, n):
+    avg = np.mean(val)
+    std = np.std(val)
+    sem = std / np.sqrt(n)
+    pass
+
+
 def _determine_sampling_information(
     job: signac.contrib.project.Job,
     ensemble: str,
     prop: str,
+    strict: bool,
     filename: str = None,
 ) -> None:
     """Write out sampling results for production properties."""
@@ -25,14 +75,31 @@ def _determine_sampling_information(
 
     if filename is None:
         filename = f"log-{ensemble}.txt"
-    sample_job(
-        job,
-        ensemble=ensemble,
-        filename=filename,
-        variable=prop,
-        threshold_fraction=0.75,
-        threshold_neff=100,
-    )
+    # Monte Carlo groups used pyMBAR to convert their log-$ENSEMBLE.txt files to production data already
+    # The sampling rates and lack of time-dependency makes pyMBAR more difficult to use for these prodution data
+    # see sample_job for information about this
+    if job.sp.engine in mc_engines:
+        sample_job(
+            job,
+            ensemble=ensemble,
+            filename=filename,
+            variable=prop,
+            threshold_fraction=0.75,
+            threshold_neff=100,
+            strict=strict,
+            monte_carlo_override=True,
+        )
+    else:
+        sample_job(
+            job,
+            ensemble=ensemble,
+            filename=filename,
+            variable=prop,
+            threshold_fraction=0.75,
+            threshold_neff=100,
+            strict=strict,
+            monte_carlo_override=True,
+        )
 
 
 def _is_prop_subsampled(
@@ -67,13 +134,10 @@ def _calc_statistics(
 
 def all_npt_props_averaged(job: signac.contrib.Project.Job):
     """Check if all npt properties are averaged."""
-    props = [
-        "potential_energy",
-        "kinetic_energy",
-        "temperature",
-        "pressure",
-        "density",
-    ]
+    if job.sp.engine in mc_engines:
+        props = mc_npt_props
+    else:
+        props = md_npt_props
     truthy = list()
     for prop in props:
         prop_string = f"npt_{prop}"
@@ -91,10 +155,10 @@ def npt_ke_subsampled(job):
     return _is_prop_subsampled(job, ensemble="npt", prop="kinetic_energy")
 
 
-@Project.label
-def nvt_ke_subsampled(job):
-    """Check if kinetic energy has been subsampled."""
-    return _is_prop_subsampled(job, ensemble="nvt", prop="kinetic_energy")
+# @Project.label
+# def nvt_ke_subsampled(job):
+#     """Check if kinetic energy has been subsampled."""
+#     return _is_prop_subsampled(job, ensemble="nvt", prop="kinetic_energy")
 
 
 @Project.label
@@ -102,9 +166,8 @@ def npt_pe_subsampled(job):
     """Check if potential energy has been subsampled."""
     return _is_prop_subsampled(job, ensemble="npt", prop="potential_energy")
 
-
-@Project.label
-def nvt_pe_subsampled(job):
+    # @Project.label
+    # def nvt_pe_subsampled(job):
     """Check if potential energy has been subsampled."""
     return _is_prop_subsampled(job, ensemble="nvt", prop="potential_energy")
 
@@ -126,15 +189,13 @@ def npt_temp_subsampled(job):
     """Check if temperature has been subsampled."""
     return _is_prop_subsampled(job, ensemble="npt", prop="temperature")
 
-
-@Project.label
-def nvt_temp_subsampled(job):
+    # @Project.label
+    # def nvt_temp_subsampled(job):
     """Check if temperature has been subsampled."""
     return _is_prop_subsampled(job, ensemble="nvt", prop="temperature")
 
-
-@Project.label
-def nvt_volume_subsampled(job):
+    # @Project.label
+    # def nvt_volume_subsampled(job):
     """Check if volume has been subsampled."""
     return _is_prop_subsampled(job, ensemble="nvt", prop="volume")
 
@@ -144,9 +205,8 @@ def npt_prod_finished(job):
     """Generate label if npt production is complete."""
     return job.isfile("trajectory-npt.gsd") and job.isfile("log-npt.txt")
 
-
-@Project.label
-def nvt_prod_finished(job):
+    # @Project.label
+    # def nvt_prod_finished(job):
     """Generate label if nvt production is complete."""
     return job.isfile("trajectory-nvt.gsd") and job.isfile("log-nvt.txt")
 
@@ -160,9 +220,8 @@ def npt_rdf_calculated(job):
         and job.isfile("npt_rdf.txt")
     )
 
-
-@Project.label
-def nvt_rdf_calculated(job):
+    # @Project.label
+    # def nvt_rdf_calculated(job):
     """Generate label if nvt rdf calc is complete."""
     return (
         job.isfile("trajectory-nvt.gsd")
@@ -171,515 +230,324 @@ def nvt_rdf_calculated(job):
     )
 
 
-@Project.operation
-@Project.pre(lambda job: job.isfile("trajectory-npt.gsd"))
-@Project.post(lambda job: job.isfile("npt_rdf.png"))
-@Project.post(lambda job: job.isfile("npt_rdf.txt"))
-def rdf_npt_analysis(job):
-    """Run RDF analysis."""
-    from reproducibility_project.src.analysis.rdf import gsd_rdf
+def create_rdf_analysis(ensemble: str):
+    """Dynamically create the rdf analysis methods."""
 
-    # RDF
-    gsd_rdf(job, ensemble="npt")
+    @Project.operation(f"rdf-{ensemble}")
+    @Project.pre(lambda job: job.isfile(f"trajectory-{ensemble}.gsd"))
+    @Project.post(lambda job: job.isfile(f"{ensemble}_rdf.png"))
+    @Project.post(lambda job: job.isfile(f"{ensemble}_rdf.txt"))
+    def rdf_analysis(job):
+        """Run RDF analysis."""
+        from reproducibility_project.src.analysis.rdf import gsd_rdf
 
-
-@Project.operation
-@Project.pre(lambda job: job.isfile("trajectory-nvt.gsd"))
-@Project.post(lambda job: job.isfile("nvt_rdf.png"))
-@Project.post(lambda job: job.isfile("nvt_rdf.txt"))
-def rdf_nvt_analysis(job):
-    """Run RDF analysis."""
-    from reproducibility_project.src.analysis.rdf import gsd_rdf
-
-    # RDF
-    gsd_rdf(job, ensemble="nvt")
+        # RDF
+        gsd_rdf(job, filename=f"trajectory-{ensemble}.gsd", ensemble=ensemble)
 
 
-@Project.operation
-@Project.pre(lambda job: job.isfile("log-npt.txt"))
-@Project.post(
-    lambda job: job.doc.get("npt/sampling_results", {}).get("pressure")
-)
-@flow.with_job
-def determine_npt_pressure_sampling(job):
-    """Write out sampling results for NPT production properties."""
-    from reproducibility_project.src.analysis.sampler import sample_job
+for ensemble in ["npt", "nvt"]:
+    create_rdf_analysis(ensemble=ensemble)
 
-    _determine_sampling_information(
-        job=job, ensemble="npt", prop="pressure", filename=None
+
+def create_property_sampling(
+    ensemble: str,
+    prop: str,
+    simulation_type: str,
+    engine_list: List[str],
+):
+    """Dynamically create the sampling steps for the simulation data."""
+
+    @analysis
+    @Project.operation(
+        f"{simulation_type}_determine_{ensemble}_{prop}_sampling"
     )
-
-
-@Project.operation
-@Project.pre(lambda job: job.isfile("log-npt.txt"))
-@Project.post(
-    lambda job: job.doc.get("npt/sampling_results", {}).get("density")
-)
-@flow.with_job
-def determine_npt_density_sampling(job):
-    """Write out sampling results for NPT production properties."""
-    from reproducibility_project.src.analysis.sampler import sample_job
-
-    _determine_sampling_information(
-        job=job, ensemble="npt", prop="density", filename=None
+    @Project.pre(lambda job: job.sp.engine in engine_list)
+    @Project.pre(lambda job: job.isfile(f"log-{ensemble}.txt"))
+    @Project.post(
+        lambda job: job.doc.get(f"{ensemble}/sampling_results", {}).get(
+            f"{prop}"
+        )
+        is not None
     )
+    @flow.with_job
+    def sample_property(job):
+        """Write out sampling results for production properties."""
+        from reproducibility_project.src.analysis.sampler import sample_job
 
-
-@Project.operation
-@Project.pre(lambda job: job.isfile("log-npt.txt"))
-@Project.post(
-    lambda job: job.doc.get("npt/sampling_results", {}).get("potential_energy")
-)
-@flow.with_job
-def determine_npt_potential_energy_sampling(job):
-    """Write out sampling results for NPT production properties."""
-    from reproducibility_project.src.analysis.sampler import sample_job
-
-    _determine_sampling_information(
-        job=job, ensemble="npt", prop="potential_energy", filename=None
-    )
-
-
-@Project.operation
-@Project.pre(lambda job: job.isfile("log-npt.txt"))
-@Project.post(
-    lambda job: job.doc.get("npt/sampling_results", {}).get("kinetic_energy")
-)
-@flow.with_job
-def determine_npt_kinetic_energy_sampling(job):
-    """Write out sampling results for NPT production properties."""
-    from reproducibility_project.src.analysis.sampler import sample_job
-
-    _determine_sampling_information(
-        job=job, ensemble="npt", prop="kinetic_energy", filename=None
-    )
-
-
-@Project.operation
-@Project.pre(lambda job: job.isfile("log-npt.txt"))
-@Project.post(
-    lambda job: job.doc.get("npt/sampling_results", {}).get("temperature")
-)
-@flow.with_job
-def determine_npt_temperature_sampling(job):
-    """Write out sampling results for NPT production properties."""
-    from reproducibility_project.src.analysis.sampler import sample_job
-
-    _determine_sampling_information(
-        job=job, ensemble="npt", prop="temperature", filename=None
-    )
-
-
-@Project.operation
-@Project.pre(lambda job: job.isfile("log-nvt.txt"))
-@Project.post(
-    lambda job: job.doc.get("nvt/sampling_results", {}).get("potential_energy")
-)
-@flow.with_job
-def determine_nvt_potential_energy_sampling(job):
-    """Write out sampling results for NVT production properties."""
-    from reproducibility_project.src.analysis.sampler import sample_job
-
-    _determine_sampling_information(
-        job=job, ensemble="nvt", prop="potential_energy", filename=None
-    )
-
-
-@Project.operation
-@Project.pre(lambda job: job.isfile("log-nvt.txt"))
-@Project.post(
-    lambda job: job.doc.get("nvt/sampling_results", {}).get("kinetic_energy")
-)
-@flow.with_job
-def determine_nvt_kinetic_energy_sampling(job):
-    """Write out sampling results for NVT production properties."""
-    from reproducibility_project.src.analysis.sampler import sample_job
-
-    _determine_sampling_information(
-        job=job, ensemble="nvt", prop="kinetic_energy", filename=None
-    )
-
-
-@Project.operation
-@Project.pre(lambda job: job.isfile("log-nvt.txt"))
-@Project.post(lambda job: job.doc.get("nvt/sampling_results", {}).get("volume"))
-@flow.with_job
-def determine_nvt_volume_sampling(job):
-    """Write out sampling results for NVT production properties."""
-    from reproducibility_project.src.analysis.sampler import sample_job
-
-    _determine_sampling_information(
-        job=job, ensemble="nvt", prop="volume", filename=None
-    )
-
-
-@Project.operation
-@Project.pre(lambda job: job.isfile("log-nvt.txt"))
-@Project.post(
-    lambda job: job.doc.get("nvt/sampling_results", {}).get("temperature")
-)
-@flow.with_job
-def determine_nvt_temperature_sampling(job):
-    """Write out sampling results for NVT production properties."""
-    from reproducibility_project.src.analysis.sampler import sample_job
-
-    _determine_sampling_information(
-        job=job, ensemble="nvt", prop="temperature", filename=None
-    )
-
-
-@Project.operation
-@Project.pre(lambda job: job.isfile("log-npt.txt"))
-@Project.pre(
-    lambda job: all(
-        [
-            _is_prop_subsampled(job, ensemble="npt", prop=my_prop)
-            for my_prop in [
-                "potential_energy",
-                "kinetic_energy",
-                "temperature",
-                "pressure",
-                "density",
-            ]
-        ]
-    )
-)
-@Project.post(lambda job: job.doc.get("npt/max_t0"))
-def npt_write_largest_t0(job):
-    """Write out maximium t0 for all subsampled values in npt production."""
-    npt_props = [
-        "potential_energy",
-        "kinetic_energy",
-        "temperature",
-        "pressure",
-        "density",
-    ]
-    job.doc["npt/max_t0"] = _get_largest_t0(
-        job, ensemble="npt", props=npt_props
-    )
-
-
-@Project.operation
-@Project.pre(lambda job: job.isfile("log-nvt.txt"))
-@Project.pre(
-    lambda job: all(
-        [
-            _is_prop_subsampled(job, ensemble="nvt", prop=my_prop)
-            for my_prop in [
-                "potential_energy",
-                "kinetic_energy",
-                "temperature",
-                "volume",
-            ]
-        ]
-    )
-)
-@Project.post(lambda job: job.doc.get("nvt/max_t0"))
-def nvt_write_largest_t0(job):
-    """Write out maximium t0 for all subsampled values in nvt production."""
-    nvt_props = ["potential_energy", "kinetic_energy", "temperature", "volume"]
-    job.doc["nvt/max_t0"] = _get_largest_t0(
-        job, ensemble="nvt", props=nvt_props
-    )
-
-
-@Project.operation
-@Project.pre(lambda job: job.isfile("log-npt.txt"))
-@Project.pre(lambda job: job.doc.get("npt/max_t0"))
-@Project.pre(
-    lambda job: all(
-        [
-            _is_prop_subsampled(job, ensemble="npt", prop=my_prop)
-            for my_prop in [
-                "potential_energy",
-                "kinetic_energy",
-                "temperature",
-                "density",
-                "pressure",
-            ]
-        ]
-    )
-)
-@Project.post(
-    lambda job: all(
-        [
-            job.isfile(fname)
-            for fname in [
-                "npt_potential_energy.h5",
-                "npt_kinetic_energy.h5",
-                "npt_temperature.h5",
-                "npt_pressure.h5",
-                "npt_density.h5",
-            ]
-        ]
-    )
-)
-@flow.with_job
-def npt_write_subsampled_max_t0(job):
-    """Write subsampled properties to job.stores."""
-    from reproducibility_project.src.analysis.sampler import (
-        get_decorr_samples_using_max_t0,
-    )
-
-    ensemble = "npt"
-    props = [
-        "potential_energy",
-        "kinetic_energy",
-        "temperature",
-        "pressure",
-        "density",
-    ]
-    for prop in props:
-        with job.stores[f"{ensemble}_{prop}"] as data:
-            data["property"] = get_decorr_samples_using_max_t0(
-                job,
-                ensemble=ensemble,
-                property_filename="log-npt.txt",
-                property=prop,
-            )
-
-
-@Project.operation
-@Project.pre(lambda job: job.isfile("trajectory-nvt.gsd"))
-@Project.pre(lambda job: job.isfile("log-nvt.txt"))
-@Project.pre(lambda job: job.doc.get("nvt/max_t0"))
-@Project.pre(
-    lambda job: all(
-        [
-            _is_prop_subsampled(job, ensemble="nvt", prop=my_prop)
-            for my_prop in [
-                "potential_energy",
-                "kinetic_energy",
-                "temperature",
-                "volume",
-            ]
-        ]
-    )
-)
-@Project.post(
-    lambda job: all(
-        [
-            job.isfile(fname)
-            for fname in [
-                "nvt_potential_energy.h5",
-                "nvt_kinetic_energy.h5",
-                "nvt_temperature.h5",
-                "nvt_volume.h5",
-            ]
-        ]
-    )
-)
-@flow.with_job
-def nvt_write_subsampled_max_t0(job):
-    """Write subsampled properties to job.stores."""
-    from reproducibility_project.src.analysis.sampler import (
-        get_decorr_samples_using_max_t0,
-    )
-
-    ensemble = "nvt"
-    props = ["potential_energy", "kinetic_energy", "temperature", "density"]
-    for prop in props:
-        with job.stores[f"{ensemble}_{prop}"] as data:
-            data["property"] = get_decorr_samples_using_max_t0(
-                job,
-                ensemble=ensemble,
-                property_filename="log-nvt.txt",
-                property=prop,
-            )
-
-
-@Project.operation
-@Project.pre(lambda job: job.isfile("npt_potential_energy.h5"))
-@Project.post(lambda job: job.doc.get("npt_potential_energy_avg"))
-@Project.post(lambda job: job.doc.get("npt_potential_energy_std"))
-@flow.with_job
-def npt_calc_potential_energy_statistics(job):
-    """Calc statistics on subsampled npt property."""
-    _calc_statistics(job, ensemble="npt", prop="potential_energy")
-
-
-@Project.operation
-@Project.pre(lambda job: job.isfile("npt_kinetic_energy.h5"))
-@Project.post(lambda job: job.doc.get("npt_kinetic_energy_avg"))
-@Project.post(lambda job: job.doc.get("npt_kinetic_energy_std"))
-@flow.with_job
-def npt_calc_kinetic_energy_statistics(job):
-    """Calc statistics on subsampled npt property."""
-    _calc_statistics(job, ensemble="npt", prop="kinetic_energy")
-
-
-@Project.operation
-@Project.pre(lambda job: job.isfile("npt_temperature.h5"))
-@Project.post(lambda job: job.doc.get("npt_temperature_avg"))
-@Project.post(lambda job: job.doc.get("npt_temperature_std"))
-@flow.with_job
-def npt_calc_temperature_statistics(job):
-    """Calc statistics on subsampled npt property."""
-    _calc_statistics(job, ensemble="npt", prop="temperature")
-
-
-@Project.operation
-@Project.pre(lambda job: job.isfile("npt_pressure.h5"))
-@Project.post(lambda job: job.doc.get("npt_pressure_avg"))
-@Project.post(lambda job: job.doc.get("npt_pressure_std"))
-@flow.with_job
-def npt_calc_pressure_statistics(job):
-    """Calc statistics on subsampled npt property."""
-    _calc_statistics(job, ensemble="npt", prop="pressure")
-
-
-@Project.operation
-@Project.pre(lambda job: job.isfile("npt_density.h5"))
-@Project.post(lambda job: job.doc.get("npt_density_avg"))
-@Project.post(lambda job: job.doc.get("npt_density_std"))
-@flow.with_job
-def npt_calc_density_statistics(job):
-    """Calc statistics on subsampled npt property."""
-    _calc_statistics(job, ensemble="npt", prop="density")
-
-
-@Project.operation
-@Project.pre(lambda job: job.isfile("nvt_potential_energy.h5"))
-@Project.post(lambda job: job.doc.get("nvt_potential_energy_avg"))
-@Project.post(lambda job: job.doc.get("nvt_potential_energy_std"))
-@flow.with_job
-def nvt_calc_potential_energy_statistics(job):
-    """Calc statistics on subsampled nvt property."""
-    _calc_statistics(job, ensemble="nvt", prop="potential_energy")
-
-
-@Project.operation
-@Project.pre(lambda job: job.isfile("nvt_kinetic_energy.h5"))
-@Project.post(lambda job: job.doc.get("nvt_kinetic_energy_avg"))
-@Project.post(lambda job: job.doc.get("nvt_kinetic_energy_std"))
-@flow.with_job
-def nvt_calc_kinetic_energy_statistics(job):
-    """Calc statistics on subsampled nvt property."""
-    _calc_statistics(job, ensemble="nvt", prop="kinetic_energy")
-
-
-@Project.operation
-@Project.pre(lambda job: job.isfile("nvt_temperature.h5"))
-@Project.post(lambda job: job.doc.get("nvt_temperature_avg"))
-@Project.post(lambda job: job.doc.get("nvt_temperature_std"))
-@flow.with_job
-def nvt_calc_temperature_statistics(job):
-    """Calc statistics on subsampled nvt property."""
-    _calc_statistics(job, ensemble="nvt", prop="temperature")
-
-
-@Project.operation
-@Project.pre(lambda job: job.isfile("nvt_density.h5"))
-@Project.post(lambda job: job.doc.get("nvt_density_avg"))
-@Project.post(lambda job: job.doc.get("nvt_density_std"))
-@flow.with_job
-def nvt_calc_density_statistics(job):
-    """Calc statistics on subsampled nvt property."""
-    _calc_statistics(job, ensemble="nvt", prop="density")
-
-
-"""
-@aggregator.groupby(
-    key=[
-        "ensemble",
-        "engine",
-        "molecule",
-        "temperature",
-        "pressure",
-        "cutoff_style",
-        "long_range_correction",
-    ],
-    sort_by="engine",
-)
-@Project.operation
-@Project.pre(
-    lambda *jobs: all([job.doc.get("nvt_density_avg") for job in jobs])
-)
-@Project.pre(
-    lambda *jobs: all([job.doc.get("nvt_density_std") for job in jobs])
-)
-def nvt_calc_aggregate_density_statistics(*jobs):
-    # should be grouped enough such that only the 16 replicates are the groupings
-    assert (
-        len(jobs) == 16
-    ), "Not all 16 replicates have their property averaged."
-    num_replicas = len(jobs)
-    avg_vals = [job.doc.get("nvt_density_avg") for job in jobs]
-    avg = np.mean(avg_vals)
-    std = np.std(avg_vals)
-    sem = std / np.sqrt(num_replicas)
-    a_job = jobs[0]
-    avg_str = f"{a_job.ensemble}_{a_job.sp.molecule}_{a_job.sp.temperature}_{a_job.sp.pressure}_{a_job.sp.cutoff_style}_{a_job.long_range_correction}_{a_job.sp.engine}_density-avg"
-    std_str = f"{a_job.ensemble}_{a_job.sp.molecule}_{a_job.sp.temperature}_{a_job.sp.pressure}_{a_job.sp.cutoff_style}_{a_job.long_range_correction}_{a_job.sp.engine}_density-std"
-    sem_str = f"{a_job.ensemble}_{a_job.sp.molecule}_{a_job.sp.temperature}_{a_job.sp.pressure}_{a_job.sp.cutoff_style}_{a_job.long_range_correction}_{a_job.sp.engine}_density-sem"
-    Project.doc[avg_str] = avg
-    Project.doc[std_str] = std
-    Project.doc[sem_str] = sem
-"""
-
-
-@Project.operation
-@Project.pre(lambda job: job.isfile("log-npt.txt"))
-@flow.with_job
-def plot_npt_prod_data_with_t0(job):
-    """Generate plots for production data with t0 as a vertical line."""
-    import pandas as pd
-
-    from reproducibility_project.src.analysis.equilibration import (
-        plot_job_property_with_t0,
-    )
-
-    ensemble = "npt"
-
-    # plot t0
-    df = pd.read_csv(job.fn("log-npt.txt"), delim_whitespace=True, header=0)
-    for prop in df.columns:
-        data_plt_kwarg = {"label": prop}
-        fname = str(prop) + "-" + ensemble + ".png"
-        plot_job_property_with_t0(
-            job,
-            filename=fname,
-            property_name=prop,
-            log_filename="log-npt.txt",
-            title=prop.upper(),
-            overwrite=True,
-            threshold_fraction=0.0,
-            threshold_neff=1,
-            vline_scale=1.1,
-            data_plt_kwargs=data_plt_kwarg,
+        _determine_sampling_information(
+            job=job,
+            ensemble=ensemble,
+            prop=prop,
+            filename=None,
+            strict=False,
         )
 
 
-@Project.operation
-# @Project.pre(lambda job: job.isfile("trajectory-nvt.gsd"))
-@Project.pre(lambda job: job.isfile("log-nvt.txt"))
-@flow.with_job
-def plot_nvt_prod_data_with_t0(job):
-    """Generate plots for production data with t0 as a vertical line."""
-    import pandas as pd
+# generate md sampling methods
+# for ensemble, props in zip(["npt", "nvt"], [md_npt_props, md_nvt_props]):
+for ensemble, props in zip(["npt"], [md_npt_props]):
+    for prop in props:
+        create_property_sampling(
+            ensemble=ensemble,
+            prop=prop,
+            simulation_type="md",
+            engine_list=md_engines,
+        )
 
-    from reproducibility_project.src.analysis.equilibration import (
-        plot_job_property_with_t0,
+# generate mc sampling methods
+# for ensemble, props in zip(["npt", "nvt"], [mc_npt_props, mc_nvt_props]):
+for ensemble, props in zip(["npt"], [mc_npt_props]):
+    for prop in props:
+        create_property_sampling(
+            ensemble=ensemble,
+            prop=prop,
+            simulation_type="mc",
+            engine_list=mc_engines,
+        )
+
+
+def create_largest_t0_operations(
+    ensemble: str,
+    prop_list: List[str],
+    simulation_type: str,
+    engine_list: List[str],
+):
+    """Dynamically create the operations to determine the largest t0 for sampling."""
+
+    @analysis
+    @Project.operation(f"{ensemble}_{simulation_type}_write_largest_t0")
+    @Project.pre(lambda job: job.isfile(f"log-{ensemble}.txt"))
+    @Project.pre(lambda job: job.sp.engine in engine_list)
+    @Project.pre(
+        lambda job: all(
+            [
+                _is_prop_subsampled(job, ensemble=ensemble, prop=my_prop)
+                for my_prop in prop_list
+            ]
+        )
+    )
+    @Project.post(lambda job: job.doc.get(f"{ensemble}/max_t0") is not None)
+    def write_largest_t0(job):
+        """Write out maximium t0 for all subsampled values in npt production."""
+        # job.doc[f"{ensemble}/max_t0"] = _get_largest_t0( # note that this was overwritten such that all production data is used
+        #    job, ensemble=ensemble, props=prop_list
+        # )
+        job.doc[f"{ensemble}/max_t0"] = 0
+
+
+# md operations
+# for ensemble, prop_list in zip(["npt", "nvt"], [md_npt_props, md_nvt_props]):
+for ensemble, prop_list in zip(["npt"], [md_npt_props]):
+    create_largest_t0_operations(
+        ensemble=ensemble,
+        prop_list=prop_list,
+        simulation_type="md",
+        engine_list=md_engines,
     )
 
-    ensemble = "nvt"
+# mc operations
+# for ensemble, prop_list in zip(["npt", "nvt"], [mc_npt_props, mc_nvt_props]):
+for ensemble, prop_list in zip(["npt"], [mc_npt_props]):
+    create_largest_t0_operations(
+        ensemble=ensemble,
+        prop_list=prop_list,
+        simulation_type="mc",
+        engine_list=mc_engines,
+    )
 
-    # plot t0
-    df = pd.read_csv(job.fn("log-nvt.txt"), delim_whitespace=True, header=0)
-    for prop in df.columns:
-        data_plt_kwarg = {"label": prop}
-        fname = str(prop) + "-" + ensemble + ".png"
-        plot_job_property_with_t0(
-            job,
-            filename=fname,
-            property_name=prop,
-            log_filename="log-nvt.txt",
-            title=prop.upper(),
-            overwrite=True,
-            threshold_fraction=0.0,
-            threshold_neff=1,
-            vline_scale=1.1,
-            data_plt_kwargs=data_plt_kwarg,
+
+def create_write_subsampled_max_t0(
+    ensemble: str,
+    prop_list: List[str],
+    simulation_type: str,
+    engine_list: List[str],
+    is_monte_carlo: bool,
+):
+    """Dynamically create the operations to write the subsampled data based on max t0."""
+
+    @analysis
+    @Project.operation(
+        f"{ensemble}_{simulation_type}_write_subsampled_data_max_t0"
+    )
+    @Project.pre(lambda job: job.isfile(f"log-{ensemble}.txt"))
+    @Project.pre(lambda job: job.doc.get(f"{ensemble}/max_t0") is not None)
+    @Project.pre(lambda job: job.sp.engine in engine_list)
+    @Project.post(
+        lambda job: all(
+            [job.isfile(f"{ensemble}_{prop}.h5") for prop in prop_list]
+        )
+    )
+    @flow.with_job
+    def write_subsampled_data_max_t0(job):
+        """Write subsampled properties to job.stores."""
+        from reproducibility_project.src.analysis.sampler import (
+            get_decorr_samples_using_max_t0,
+        )
+
+        for prop in prop_list:
+            with job.stores[f"{ensemble}_{prop}"] as data:
+                data["property"] = get_decorr_samples_using_max_t0(
+                    job,
+                    ensemble=ensemble,
+                    property_filename=f"log-{ensemble}.txt",
+                    prop=prop,
+                    is_monte_carlo=is_monte_carlo,
+                )
+
+
+# md operations
+# for ensemble, prop_list in zip(["npt", "nvt"], [md_npt_props, md_nvt_props]):
+for ensemble, prop_list in zip(["npt"], [md_npt_props]):
+    create_write_subsampled_max_t0(
+        ensemble=ensemble,
+        prop_list=prop_list,
+        simulation_type="md",
+        engine_list=md_engines,
+        is_monte_carlo=True,
+    )
+
+# mc operations
+# for ensemble, prop_list in zip(["npt", "nvt"], [mc_npt_props, mc_nvt_props]):
+for ensemble, prop_list in zip(["npt"], [mc_npt_props]):
+    create_write_subsampled_max_t0(
+        ensemble=ensemble,
+        prop_list=prop_list,
+        simulation_type="mc",
+        engine_list=mc_engines,
+        is_monte_carlo=True,
+    )
+
+
+def create_calc_prop_statistics(
+    ensemble: str, prop: str, simulation_type: str, engine_list: List[str]
+):
+    """Dynamically create the functions to calculate property statistics."""
+
+    @analysis
+    @Project.operation(
+        f"{simulation_type}_{ensemble}_{prop}_calc_prop_statistics"
+    )
+    @Project.pre(lambda job: job.isfile(f"{ensemble}_{prop}.h5"))
+    @Project.pre(lambda job: job.sp.engine in engine_list)
+    @Project.post(lambda job: job.doc.get(f"{ensemble}_{prop}_avg") is not None)
+    @Project.post(lambda job: job.doc.get(f"{ensemble}_{prop}_std") is not None)
+    @flow.with_job
+    def calc_prop_stats(job):
+        """Calc statistics on subsampled property."""
+        _calc_statistics(job=job, ensemble=ensemble, prop=prop)
+
+
+# generate md property statistics methods
+# for ensemble, props in zip(["npt", "nvt"], [md_npt_props, md_nvt_props]):
+for ensemble, prop_list in zip(["npt"], [md_npt_props]):
+    for prop in props:
+        create_calc_prop_statistics(
+            ensemble=ensemble,
+            prop=prop,
+            simulation_type="md",
+            engine_list=md_engines,
+        )
+
+
+# generate mc property statistics methods
+# for ensemble, props in zip(["npt", "nvt"], [mc_npt_props, mc_nvt_props]):
+for ensemble, prop_list in zip(["npt"], [mc_npt_props]):
+    for prop in props:
+        create_calc_prop_statistics(
+            ensemble=ensemble,
+            prop=prop,
+            simulation_type="mc",
+            engine_list=mc_engines,
+        )
+
+
+def create_calc_aggregate_statistics(
+    ensemble: str,
+    prop: str,
+    simulation_type: str,
+):
+    """Dynamically create the operations to calculate the aggregate property statistics for each engine."""
+
+    @analysis
+    @aggregator.groupby(
+        key=[
+            "ensemble",
+            "engine",
+            "molecule",
+            "temperature",
+            "pressure",
+            "cutoff_style",
+            "long_range_correction",
+        ],
+        sort_by="engine",
+    )
+    @Project.operation(
+        f"{ensemble}_{prop}_{simulation_type}_calc_aggregate_stats"
+    )
+    @Project.pre(
+        lambda *jobs: all(
+            [job.doc.get(f"{ensemble}_{prop}_avg") is not None for job in jobs]
+        )
+    )
+    @Project.pre(
+        lambda *jobs: all(
+            [job.doc.get(f"{ensemble}_{prop}_std") is not None for job in jobs]
+        )
+    )
+    @Project.post(
+        lambda *jobs: all(
+            [job.isfile(f"{ensemble}_{prop}_calculated.txt") for job in jobs]
+        )
+    )
+    def calc_aggregate_prop_statistics(*jobs):
+        """Store aggregate statistics for the ensemble, property calculations."""
+        # should be grouped enough such that only the 16 replicates are the groupings
+        agg_project = signac.get_project(
+            root=pathlib.Path("./aggregate_summary/").absolute()
+        )
+        assert (
+            len(jobs) == 16
+        ), "Not all 16 replicates have their property averaged."
+        num_replicas = len(jobs)
+        avg_vals = [job.doc.get(f"{ensemble}_{prop}_avg") for job in jobs]
+        avg = np.mean(avg_vals)
+        std = np.std(avg_vals)
+        sem = std / np.sqrt(num_replicas)
+        a_job = jobs[0]
+        job_sp = copy(a_job.sp._to_base())  # convert from syncedDict->dict
+
+        # Discard unnesscary properties
+        discarded_replica = job_sp.pop("replica")
+        discarded_mass = job_sp.pop("mass")
+
+        agg_job = agg_project.open_job(statepoint=job_sp)
+        agg_job.doc[f"{prop}-avg"] = avg
+        agg_job.doc[f"{prop}-std"] = std
+        agg_job.doc[f"{prop}-sem"] = sem
+        for job in jobs:
+            my_job_path = pathlib.Path(
+                job.fn(f"{ensemble}_{prop}_calculated.txt")
+            ).touch()
+
+
+# generate md aggreagate values
+# for ensemble, prop_list in zip(["npt", "nvt"], [md_npt_props, md_nvt_props]):
+for ensemble, prop_list in zip(["npt"], [md_npt_props]):
+    for prop in prop_list:
+        create_calc_aggregate_statistics(
+            ensemble=ensemble,
+            prop=prop,
+            simulation_type="md",
+        )
+
+# generate mc aggreagate values
+# for ensemble, prop_list in zip(["npt", "nvt"], [mc_npt_props, mc_nvt_props]):
+for ensemble, prop_list in zip(["npt"], [mc_npt_props]):
+    for prop in prop_list:
+        create_calc_aggregate_statistics(
+            ensemble=ensemble,
+            prop=prop,
+            simulation_type="mc",
         )
 
 

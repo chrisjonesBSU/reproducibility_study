@@ -1,4 +1,5 @@
 """Initialize signac statepoints."""
+
 import itertools
 import os
 
@@ -31,9 +32,8 @@ simulation_engines = [
     "gromacs",
     "hoomd",
     "lammps-VU",
-    "lammps-UD",
 ]
-md_engines = ["gromacs", "hoomd", "lammps-VU", "lammps-UD"]
+md_engines = ["gromacs", "hoomd", "lammps-VU"]
 mc_engines = ["cassandra", "mcccs", "gomc"]
 forcefields = {}
 r_cuts = {}
@@ -54,12 +54,12 @@ for key in molecules:
         r_cuts[key] = 10 * u.angstrom
 g_per_cm3 = u.g / (u.cm * u.cm * u.cm)
 masses = {
-    "methaneUA": [16.04] * u.amu,
-    "pentaneUA-flexible_bonds": [72.15] * u.amu,
-    "pentaneUA-constrain_bonds": [72.15] * u.amu,
-    "benzeneUA": [78.1118] * u.amu,
-    "waterSPCE": [18.0153] * u.amu,
-    "ethanolAA": [46.0684] * u.amu,
+    "methaneUA": [16.043] * u.amu,
+    "pentaneUA-flexible_bonds": [72.151] * u.amu,
+    "pentaneUA-constrain_bonds": [72.151] * u.amu,
+    "benzeneUA": [78.114] * u.amu,
+    "waterSPCE": [18.015324] * u.amu,
+    "ethanolAA": [46.068672] * u.amu,
 }
 init_density_liq = {
     "methaneUA": [0.3752] * g_per_cm3,
@@ -187,28 +187,34 @@ for molecule in molecules:
             "ensemble": ensemble if ensemble else None,
             "N_liquid": n_liq,
             "N_vap": n_vap if n_vap else None,
-            "box_L_liq": np.round(
-                liq_box_L.to_value("nm"),
-                decimals=3,
-            ).item()
-            if liq_box_L
-            else None,
-            "box_L_vap": np.round(
-                vap_box_L.to_value("nm"),
-                decimals=3,
-            ).item()
-            if vap_box_L
-            else None,
+            "box_L_liq": (
+                np.round(
+                    liq_box_L.to_value("nm"),
+                    decimals=3,
+                ).item()
+                if liq_box_L
+                else None
+            ),
+            "box_L_vap": (
+                np.round(
+                    vap_box_L.to_value("nm"),
+                    decimals=3,
+                ).item()
+                if vap_box_L
+                else None
+            ),
             "init_liq_den": np.round(
                 init_liq_den.to_value(g_per_cm3),
                 decimals=3,
             ).item(),
-            "init_vap_den": np.round(
-                init_vap_den.to_value(g_per_cm3),
-                decimals=3,
-            ).item()
-            if init_vap_den
-            else None,
+            "init_vap_den": (
+                np.round(
+                    init_vap_den.to_value(g_per_cm3),
+                    decimals=3,
+                ).item()
+                if init_vap_den
+                else None
+            ),
             "mass": np.round(
                 mass.to_value("amu"),
                 decimals=3,

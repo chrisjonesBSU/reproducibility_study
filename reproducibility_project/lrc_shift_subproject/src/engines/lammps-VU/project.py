@@ -1,4 +1,5 @@
 """Setup for signac, signac-flow, signac-dashboard for this study."""
+
 import os
 import pathlib
 import sys
@@ -347,6 +348,16 @@ def modify_submit_scripts(filename, jobid, cores=8):
         lines = f.readlines()
         lines[1] = "#PBS -N {}\n".format(jobid)
     with open("submit.pbs", "w") as f:
+        f.writelines(lines)
+    return
+
+
+def modify_engine_scripts(filename, msg, line):
+    """Modify the submission scripts to include the job and simulation type in the header."""
+    with open(filename, "r") as f:
+        lines = f.readlines()
+        lines[line] = msg
+    with open(filename, "w") as f:
         f.writelines(lines)
     return
 

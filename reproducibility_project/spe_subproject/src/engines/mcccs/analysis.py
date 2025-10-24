@@ -1,4 +1,5 @@
 """Script for analysing the results from the 16 different seeds from the 11 systems."""
+
 # It also parses the gsd format trajectory stored in each output analysis folder (obtained by executing conv_traj.py before this script) to get the RDFs."""
 import os
 import shutil
@@ -40,7 +41,6 @@ def main():
             "long_range_correction",
         )
     ):
-
         print("-----------------------------------------------------")
         print(
             molecule,
@@ -60,7 +60,6 @@ def main():
                 str(long_range_correction),
             )
         ):
-
             os.makedirs(
                 "{}_{}_{}K_{}kPa_cutoff_{}_lrc_{}".format(
                     molecule,
@@ -120,7 +119,7 @@ def main():
                 output_string = ""
 
                 print(output_string)
-                energies = 0.00831441001625545 * np.array(
+                energies = 0.008314462618 * np.array(
                     [
                         [
                             csv_pe,

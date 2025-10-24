@@ -1,4 +1,5 @@
 """Setup for signac, signac-flow, signac-dashboard for this study."""
+
 # import foyer
 import os
 from pathlib import Path
@@ -337,7 +338,6 @@ def run_cassandra(job):
     cutoff_style = cass_cutoffs[(cutoff_style, long_range_correction)]
 
     with job:
-
         meltsystem_liq = mc.System([liqbox_filled], species_list, [[Nliq]])
 
         nvtmoves = mc.MoveSet("nvt", species_list)
@@ -602,7 +602,6 @@ def statistics(job):
     ]
 
     if job.sp.ensemble == "GEMC-NVT":
-
         box1 = "prod.out.box1.prp"
         box2 = "prod.out.box2.prp"
 
@@ -617,7 +616,6 @@ def statistics(job):
         job.document.mean_energy_box2 = data_box2["energy_total"].mean()
 
     else:
-
         box1 = "prod.out.prp"
 
         data_box1 = pd.read_table(

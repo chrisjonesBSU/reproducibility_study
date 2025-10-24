@@ -1,18 +1,25 @@
 """Timeseries and pyMBAR related methods."""
+
 import pathlib
 from typing import List
 
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
+import signac
 from pymbar import timeseries
-from signac.contrib.job import Job
+
+if hasattr(signac, "contrib"):
+    Job = signac.contrib.job.Job
+else:
+    Job = signac.job.Job
 
 
 def is_equilibrated(
     a_t: npt.ArrayLike,
     threshold_fraction: float = 0.8,
     threshold_neff: int = 100,
+    strict: bool = False,
     nskip: int = 1,
 ) -> List:
     """Check if a dataset is equilibrated based on a fraction of equil data.
@@ -39,6 +46,9 @@ def is_equilibrated(
     threshold_neff : int, optional, default=100
         Minimum amount of effectively correlated samples to consider a_t
         'equilibrated'.
+    strict : bool, optional, default=False
+        If strict require both threshold_fraction and threshold_neff to be
+        true to evaluate as 'equilibrated', else require either or.
     nskip : int, optional, default=1
         Since the statistical inefficiency is computed for every time origin
         in a call to timeseries.detectEquilibration, for larger datasets
@@ -61,16 +71,27 @@ def is_equilibrated(
     [t0, g, Neff] = timeseries.detectEquilibration(a_t, nskip=nskip)
     frac_equilibrated = 1.0 - (t0 / np.shape(a_t)[0])
 
-    if (frac_equilibrated >= threshold_fraction) and (Neff >= threshold_neff):
-        return [True, t0, g, Neff]
+    if strict:
+        if (frac_equilibrated >= threshold_fraction) and (
+            Neff >= threshold_neff
+        ):
+            return [True, t0, g, Neff]
+        else:
+            return [False, None, None, None]
     else:
-        return [False, None, None, None]
+        if (frac_equilibrated >= threshold_fraction) or (
+            Neff >= threshold_neff
+        ):
+            return [True, t0, g, Neff]
+        else:
+            return [False, None, None, None]
 
 
 def trim_non_equilibrated(
     a_t: npt.ArrayLike,
     threshold_fraction: float = 0.75,
     threshold_neff: int = 100,
+    strict: bool = False,
     nskip: int = 1,
 ) -> List:
     """Prune timeseries array to just the production data.
@@ -94,6 +115,9 @@ def trim_non_equilibrated(
         Fraction of data expected to be equilibrated.
     threshold_neff : int, optional, default=100
         Minimum amount of uncorrelated samples.
+    strict : bool, optional, default=False
+        If strict require both threshold_fraction and threshold_neff to be
+        true to evaluate as 'equilibrated', else require either or.
     nskip : int, optional, default=1
         Since the statistical inefficiency is computed for every time origin
         in a call to timeseries.detectEquilibration, for larger datasets
@@ -104,6 +128,7 @@ def trim_non_equilibrated(
         a_t,
         threshold_fraction=threshold_fraction,
         threshold_neff=threshold_neff,
+        strict=strict,
         nskip=nskip,
     )
     if not truth:
@@ -124,6 +149,7 @@ def plot_job_property_with_t0(
     vline_scale: float = 1.1,
     threshold_fraction: float = 0.0,
     threshold_neff: int = 1,
+    strict: bool = False,
     overwrite: bool = False,
     data_plt_kwargs: dict = None,
     vline_plt_kwargs: dict = None,
@@ -150,6 +176,8 @@ def plot_job_property_with_t0(
         Fraction of data expected to be equilibrated.
     threshold_neff : int, optional, default=1
         Minimum amount of uncorrelated samples.
+    strict : bool, optional, default=False
+        How strict should equilibration check be?
     overwrite : bool, optional, default=False
         Do not write to filename if a file already exists with the same name.
         Set to True to overwrite exisiting files.
@@ -165,11 +193,12 @@ def plot_job_property_with_t0(
 
     fname = pathlib.Path(filename)
     fname = fname.name
-    a_t = pd.read_csv(
-        job.fn(log_filename),
-        delim_whitespace=True,
-        header=0,
-    )
+    with open(job.fn(log_filename), "r") as f:
+        line1 = f.readline()
+        a_t = pd.read_csv(
+            f, delim_whitespace=True, names=line1.replace("#", "").split()
+        )
+
     if data_plt_kwargs is None:
         data_plt_kwargs = dict()
     if vline_plt_kwargs is None:
